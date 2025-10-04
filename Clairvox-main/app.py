@@ -2,10 +2,34 @@ import streamlit as st
 import pandas as pd
 import os
 import time
+import re
 from backend.retriever import fetch_wikipedia_summary
 from backend.synth import extract_claims_from_text
 from backend.verifier import analyze_claim
 from backend.utils import LOGO_SVG
+
+# HTML cleaning function
+def clean_html_from_text(text: str) -> str:
+    """Remove HTML tags and clean text for display."""
+    if not text:
+        return ""
+    
+    # Remove HTML tags
+    clean_text = re.sub(r'<[^>]+>', '', text)
+    
+    # Remove common HTML entities
+    clean_text = clean_text.replace('&nbsp;', ' ')
+    clean_text = clean_text.replace('&amp;', '&')
+    clean_text = clean_text.replace('&lt;', '<')
+    clean_text = clean_text.replace('&gt;', '>')
+    clean_text = clean_text.replace('&quot;', '"')
+    clean_text = clean_text.replace('&#39;', "'")
+    
+    # Clean up extra whitespace
+    clean_text = re.sub(r'\s+', ' ', clean_text)
+    clean_text = clean_text.strip()
+    
+    return clean_text
 
 # Safe imports for file parsing
 try:
@@ -231,15 +255,58 @@ if verify_clicked:
         st.session_state.results = []
         progress_bar = st.progress(0, text="Analyzing evidence for each claim...")
 
+        # Process claims with progress tracking
         for i, claim in enumerate(claims):
             claim_text = claim['text']
-            with st.spinner(f"Analyzing Claim {i+1}: '{claim_text}'"):
-                analysis_result = analyze_claim(claim_text, original_query=query)
-                st.session_state.results.append(analysis_result)
+            
+            # Show current claim being processed
+            with st.spinner(f"Analyzing Claim {i+1}: '{claim_text[:50]}{'...' if len(claim_text) > 50 else ''}'"):
+                try:
+                    analysis_result = analyze_claim(claim_text, original_query=query)
+                    st.session_state.results.append(analysis_result)
+                    
+                    # Show quick preview of result
+                    confidence = analysis_result.get('confidence', 0)
+                    classification = analysis_result.get('clairvox_result', {}).get('classification', 'Unknown')
+                    evidence_count = len(analysis_result.get('evidence', []))
+                    
+                    st.success(f"✅ Claim {i+1} analyzed: {classification} ({confidence}% confidence, {evidence_count} sources)")
+                    
+                except Exception as e:
+                    st.error(f"❌ Failed to analyze claim {i+1}: {str(e)}")
+                    # Add fallback result
+                    fallback_result = {
+                        'claim': claim_text,
+                        'confidence': 0,
+                        'explanation': f"Analysis failed: {str(e)}",
+                        'evidence': [],
+                        'support_count': 0,
+                        'diversity_domains': [],
+                        'recency_score': 0,
+                        'contradiction_count': 0,
+                        'source_quality_score': 0,
+                        'clairvox_result': {
+                            'classification': 'Analysis Failed',
+                            'confidence_score': 0,
+                            'explanation_plain': f"Analysis failed: {str(e)}",
+                            'top_evidence': [],
+                            'contradictions': [],
+                            'drivers': [],
+                            'fabricated_terms': [],
+                            'suggested_corrections': None
+                        }
+                    }
+                    st.session_state.results.append(fallback_result)
+            
             progress_bar.progress((i + 1) / len(claims), text=f"Analyzing claim {i+1}/{len(claims)}")
         
         time.sleep(0.5)
         progress_bar.empty()
+        
+        # Show completion summary
+        total_claims = len(st.session_state.results)
+        successful_claims = len([r for r in st.session_state.results if r.get('confidence', 0) > 0])
+        st.success(f"🎉 Analysis complete! Processed {total_claims} claims ({successful_claims} successful)")
 
 
 # --- Display Results ---
@@ -301,13 +368,19 @@ if st.session_state.results:
             </div>
             """, unsafe_allow_html=True)
         
-        # Evidence summary (inline, 1-2 key snippets)
-        if clairvox_result.get('drivers'):
-            st.markdown("<div class='evidence-summary'>")
-            st.markdown("**Evidence Summary:**")
-            for driver in clairvox_result['drivers'][:2]:  # Show only first 2 drivers inline
-                st.markdown(f"• {driver}")
-            st.markdown("</div>")
+        # Concise Evidence Summary
+        if clairvox_result.get('drivers') or clairvox_result.get('key_evidence_points'):
+            st.markdown("**📋 Key Evidence Points:**")
+            
+            # Show key evidence points with proper formatting
+            evidence_points = clairvox_result.get('key_evidence_points', clairvox_result.get('drivers', []))
+            for i, point in enumerate(evidence_points[:2], 1):  # Show only top 2 points
+                clean_point = clean_html_from_text(str(point))
+                st.markdown(f"• {clean_point}")
+            
+            # Show source quality
+            if clairvox_result.get('source_quality'):
+                st.markdown(f"*Source Quality: {clairvox_result['source_quality']}*")
         
         # Show fabricated terms if any
         if clairvox_result.get('fabricated_terms'):
@@ -325,45 +398,72 @@ if st.session_state.results:
             
             st.markdown("</div>")
         
-        # Explanation
-        st.markdown(f"<div style='margin: 12px 0; opacity: 0.9; line-height: 1.5;'>{explanation}</div>", unsafe_allow_html=True)
+        # Clean explanation text and display
+        clean_explanation = clean_html_from_text(explanation)
+        st.markdown(f"<div style='margin: 12px 0; opacity: 0.9; line-height: 1.5;'>{clean_explanation}</div>", unsafe_allow_html=True)
         
-        # Expandable evidence panel
-        with st.expander("View Evidence & Details", expanded=False):
+        # Enhanced Expandable Evidence Panel
+        with st.expander("🔍 View Evidence & Details", expanded=False):
             if result.get('evidence'):
-                st.markdown("**Supporting Sources:**")
-                for j, evidence in enumerate(result['evidence'][:5]):  # Show top 5
-                    title = evidence.get('title', 'No title')
-                    authors = evidence.get('authors', 'Unknown authors')
-                    venue = evidence.get('venue', 'Unknown venue')
-                    date = evidence.get('date', 'Unknown date')
-                    doi = evidence.get('doi', '')
-                    url = evidence.get('url', '')
-                    excerpt = evidence.get('excerpt', '')
-                    
-                    # Truncate excerpt
-                    if len(excerpt) > 200:
-                        excerpt = excerpt[:200] + "..."
-                    
-                    evidence_type = evidence.get('type', 'unknown')
+                st.markdown("**📚 Supporting Sources:**")
+                
+                # Group evidence by type for better organization
+                evidence_by_type = {}
+                for evidence in result['evidence']:
+                    evidence_type = evidence.get('type', 'web')
+                    if evidence_type not in evidence_by_type:
+                        evidence_by_type[evidence_type] = []
+                    evidence_by_type[evidence_type].append(evidence)
+                
+                # Display evidence by type
+                for evidence_type, evidence_list in evidence_by_type.items():
                     type_emoji = {
                         'peer-reviewed': '📚',
                         'preprint': '📄',
                         'conference': '🎯',
-                        'news': '📰'
+                        'news': '📰',
+                        'web': '🌐'
                     }.get(evidence_type, '📄')
                     
-                    st.markdown(f"""
-                    <div class='evidence-item'>
-                        <div class='evidence-title'>{type_emoji} {title}</div>
-                        <div class='evidence-meta'>
-                            <strong>Authors:</strong> {authors} | 
-                            <strong>Venue:</strong> {venue} ({date}) | 
-                            <strong>DOI:</strong> {doi if doi else 'N/A'}
-                        </div>
-                        <div class='evidence-excerpt'>{excerpt if excerpt else 'No excerpt available'}</div>
-                    </div>
-                    """, unsafe_allow_html=True)
+                    st.markdown(f"**{type_emoji} {evidence_type.title()} Sources:**")
+                    
+                    for j, evidence in enumerate(evidence_list[:5]):  # Show top 5 per type
+                        title = evidence.get('title', 'No title')
+                        url = evidence.get('url', '')
+                        snippet = evidence.get('snippet', '')
+                        query_used = evidence.get('query_used', '')
+                        relevance_score = evidence.get('relevance_score', 0)
+                        
+                        # Create clickable link with proper URL validation
+                        if url and (url.startswith(('http://', 'https://')) or url.startswith('www.')):
+                            # Ensure proper URL format
+                            if url.startswith('www.'):
+                                url = 'https://' + url
+                            # Use proper markdown link format
+                            link_display = f"[{title}]({url})"
+                        else:
+                            link_display = title
+                        
+                        # Clean and truncate snippet
+                        clean_snippet = clean_html_from_text(snippet)
+                        if len(clean_snippet) > 300:
+                            clean_snippet = clean_snippet[:300] + "..."
+                        
+                        # Relevance indicator
+                        relevance_color = "#30a46c" if relevance_score > 70 else "#e6a700" if relevance_score > 40 else "#e5484d"
+                        
+                        # Display evidence using proper Streamlit markdown
+                        st.markdown(f"**{link_display}**")
+                        st.markdown(f"*Relevance: {relevance_score}% | Query: `{query_used[:50]}{'...' if len(query_used) > 50 else ''}`*")
+                        st.markdown(f"{clean_snippet if clean_snippet else 'No excerpt available'}")
+                        st.markdown("---")
+                
+                # Show search queries used
+                if clairvox_result.get('search_queries_used'):
+                    st.markdown("**🔍 Search Queries Used:**")
+                    for query in clairvox_result['search_queries_used'][:3]:
+                        st.markdown(f"• `{query}`")
+                        
             else:
                 st.warning("No direct evidence found for this claim.")
             
@@ -382,37 +482,64 @@ if st.session_state.results:
         
         st.markdown("</div>", unsafe_allow_html=True)
         
-        # Provenance panel (right side)
-        st.markdown("""
-        <div class='provenance-panel'>
-            <h4 style='margin: 0 0 12px; color: #CDD6F4;'>🔍 Provenance & Sources</h4>
-        """, unsafe_allow_html=True)
+        # Concise Provenance Information
+        st.markdown("**🔍 Source Information:**")
         
-        # Database sources
+        # Enhanced source statistics
         if result.get('evidence'):
-            sources = {}
-            for evidence in result['evidence']:
-                source = evidence.get('source', 'Unknown')
-                sources[source] = sources.get(source, 0) + 1
+            # Source type breakdown
+            source_types = {}
+            domain_sources = {}
+            total_relevance = 0
             
-            st.markdown("**Sources by Database:**")
-            for source, count in sources.items():
-                st.markdown(f"• {source}: {count} results")
-        
-        # Query terms
-        if result.get('evidence'):
-            queries_used = set()
             for evidence in result['evidence']:
-                query = evidence.get('query_used', '')
-                if query:
-                    queries_used.add(query)
+                source_type = evidence.get('type', 'unknown')
+                source_types[source_type] = source_types.get(source_type, 0) + 1
+                
+                # Extract domain from URL
+                url = evidence.get('url', '')
+                if url:
+                    try:
+                        from urllib.parse import urlparse
+                        domain = urlparse(url).netloc
+                        if domain:
+                            domain_sources[domain] = domain_sources.get(domain, 0) + 1
+                    except:
+                        pass
+                
+                total_relevance += evidence.get('relevance_score', 0)
             
-            if queries_used:
-                st.markdown("**Search Queries:**")
-                for query in list(queries_used)[:3]:
-                    st.markdown(f"• `{query}`")
+            # Display source statistics
+            st.markdown("**📊 Source Statistics:**")
+            for source_type, count in source_types.items():
+                emoji = {'web': '🌐', 'peer-reviewed': '📚', 'preprint': '📄', 'conference': '🎯'}.get(source_type, '📄')
+                st.markdown(f"• {emoji} {source_type.title()}: {count} results")
+            
+            # Average relevance score
+            if result['evidence']:
+                avg_relevance = total_relevance / len(result['evidence'])
+                relevance_color = "#30a46c" if avg_relevance > 70 else "#e6a700" if avg_relevance > 40 else "#e5484d"
+                st.markdown(f"• **Average Relevance:** {avg_relevance:.1f}%")
+            
+            # Top domains
+            if domain_sources:
+                st.markdown("**🌐 Top Domains:**")
+                sorted_domains = sorted(domain_sources.items(), key=lambda x: x[1], reverse=True)
+                for domain, count in sorted_domains[:3]:
+                    st.markdown(f"• {domain}: {count} sources")
         
-        st.markdown("</div>")
+        # Search queries with better formatting
+        if clairvox_result.get('search_queries_used'):
+            st.markdown("**🔍 Search Queries Used:**")
+            for i, query in enumerate(clairvox_result['search_queries_used'][:3], 1):
+                st.markdown(f"**{i}.** `{query}`")
+        
+        # Recommendations if available
+        if clairvox_result.get('suggested_corrections'):
+            st.markdown("**💡 Recommendations:**")
+            for i, rec in enumerate(clairvox_result['suggested_corrections'][:3], 1):
+                st.markdown(f"**{i}.** {rec}")
+        
         st.markdown("---")
     
     # Add reproducible results panel
@@ -461,16 +588,46 @@ if st.session_state.results:
             hide_index=True
         )
         
-        # Display detailed source information
-        st.markdown("### 📚 Sources by Claim")
+        # Enhanced conclusion points with proper links
+        st.markdown("### 📋 Key Conclusions & Evidence Links")
+        
         for i, data in enumerate(summary_data):
-            st.markdown(f"**Claim {i+1} - {data['Classification']}**")
-            if data['Top Sources']:
-                for j, source in enumerate(data['Top Sources']):
-                    st.markdown(f"**{j+1}.** {source['title']} | DOI: {source['doi']} | Venue: {source['venue']} | Type: {source['type']}")
+            classification = data['Classification']
+            confidence_score = int(data['Confidence Score'].split('/')[0])
+            
+            # Color coding for confidence
+            if confidence_score > 70:
+                confidence_emoji = "🟢"
+                confidence_text = "High Confidence"
+            elif confidence_score > 40:
+                confidence_emoji = "🟡"
+                confidence_text = "Medium Confidence"
             else:
-                st.markdown("No sources found")
-            st.markdown("---")
+                confidence_emoji = "🔴"
+                confidence_text = "Low Confidence"
+            
+            st.markdown(f"**Claim {i+1}:** {confidence_emoji} {classification} ({confidence_text})")
+            
+            if data['Top Sources']:
+                st.markdown("**Key Evidence Links:**")
+                for j, source in enumerate(data['Top Sources'][:3]):  # Show top 3 sources
+                    source_emoji = {'peer-reviewed': '📚', 'preprint': '📄', 'conference': '🎯', 'web': '🌐', 'research': '🔬'}.get(source['type'], '📄')
+                    clean_title = clean_html_from_text(source['title'])
+                    
+                    # Create clickable link for the title
+                    source_url = source.get('url', '')
+                    if source_url and (source_url.startswith(('http://', 'https://')) or source_url.startswith('www.')):
+                        if source_url.startswith('www.'):
+                            source_url = 'https://' + source_url
+                        title_link = f"[{clean_title}]({source_url})"
+                    else:
+                        title_link = clean_title
+                    
+                    st.markdown(f"• {source_emoji} {title_link}")
+            else:
+                st.markdown("⚠️ No supporting evidence found")
+            
+            st.markdown("")
 
 
 

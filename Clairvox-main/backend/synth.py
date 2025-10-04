@@ -20,13 +20,24 @@ Analyze the text below and extract 5 to 7 of the most important and distinct cla
 **CRITICAL INSTRUCTIONS:**
 1. Each claim MUST be a single, complete, and grammatically correct sentence.
 2. DO NOT start claims with "..." or use fragmented sentences. Do not include markdown like '---'.
-3. The output MUST be ONLY a valid JSON array of objects.
+3. The output MUST be ONLY a valid JSON array starting with [ and ending with ].
 4. Each object in the array must have two keys: "text" (the full sentence of the claim) and "supporting_span" (the original text snippet it came from).
+5. Return ONLY the JSON array, no other text.
 
 Text:
 {context}
 
-JSON Output:"""
+Return only this JSON format:
+[
+  {
+    "text": "First claim here",
+    "supporting_span": "Original text snippet"
+  },
+  {
+    "text": "Second claim here", 
+    "supporting_span": "Original text snippet"
+  }
+]"""
 
 def extract_claims_with_ollama(context: str) -> List[Dict]:
     """Uses Ollama with Llama 3.2 to extract claims from text."""
@@ -59,24 +70,77 @@ def extract_claims_with_ollama(context: str) -> List[Dict]:
         # Clean the output to be valid JSON
         json_str = raw_output.strip()
         
-        # Find JSON array in the response
+        # Remove any leading text before the first [
+        if '[' in json_str:
+            json_str = json_str[json_str.find('['):]
+        
+        # Remove any trailing text after the last ]
+        if ']' in json_str:
+            json_str = json_str[:json_str.rfind(']') + 1]
+        
+        # Fix malformed JSON by ensuring proper array structure
         if not json_str.startswith('['):
-            start_index = json_str.find('[')
-            if start_index != -1:
-                json_str = json_str[start_index:]
-        
+            json_str = '[' + json_str
         if not json_str.endswith(']'):
-            end_index = json_str.rfind(']')
-            if end_index != -1:
-                json_str = json_str[:end_index+1]
-
-        claims = json.loads(json_str)
+            json_str = json_str + ']'
         
-        if isinstance(claims, list) and all('text' in c and 'supporting_span' in c for c in claims):
-            logging.info(f"Successfully extracted {len(claims)} claims using Ollama")
-            return claims
-        else:
-            logging.warning(f"Ollama output was not in the expected format: {claims}")
+        # Clean up common JSON formatting issues
+        json_str = json_str.replace('\n', '')  # Remove newlines
+        json_str = json_str.replace('\r', '')  # Remove carriage returns
+        json_str = json_str.replace('\t', '')  # Remove tabs
+        json_str = json_str.replace('  ', ' ')  # Replace double spaces with single
+        json_str = json_str.strip()
+        
+        # Try to fix malformed JSON structure
+        # If it looks like multiple JSON objects without proper array structure
+        if json_str.count('{') > 1 and not json_str.startswith('['):
+            # Split by } and { to find individual objects
+            parts = json_str.split('}')
+            fixed_parts = []
+            for part in parts:
+                if part.strip() and '{' in part:
+                    if not part.strip().startswith('{'):
+                        part = '{' + part.split('{', 1)[1] if '{' in part else part
+                    fixed_parts.append(part + '}')
+            
+            if fixed_parts:
+                json_str = '[' + ','.join(fixed_parts) + ']'
+        
+        try:
+            claims = json.loads(json_str)
+            
+            if isinstance(claims, list) and all('text' in c and 'supporting_span' in c for c in claims):
+                logging.info(f"Successfully extracted {len(claims)} claims using Ollama")
+                return claims
+            else:
+                logging.warning(f"Ollama output was not in the expected format: {claims}")
+                return []
+        except json.JSONDecodeError as e:
+            logging.error(f"JSON decode error: {e}")
+            logging.error(f"Attempted to parse: {json_str[:200]}...")
+            
+            # Try to extract claims from malformed JSON using regex
+            import re
+            try:
+                # Look for text and supporting_span patterns
+                text_pattern = r'"text":\s*"([^"]+)"'
+                span_pattern = r'"supporting_span":\s*"([^"]+)"'
+                
+                text_matches = re.findall(text_pattern, json_str)
+                span_matches = re.findall(span_pattern, json_str)
+                
+                if text_matches and span_matches and len(text_matches) == len(span_matches):
+                    claims = []
+                    for i in range(len(text_matches)):
+                        claims.append({
+                            'text': text_matches[i],
+                            'supporting_span': span_matches[i]
+                        })
+                    logging.info(f"Extracted {len(claims)} claims using regex fallback")
+                    return claims
+            except Exception as regex_error:
+                logging.error(f"Regex fallback also failed: {regex_error}")
+            
             return []
 
     except requests.exceptions.RequestException as e:
