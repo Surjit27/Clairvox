@@ -1,0 +1,10 @@
+services:
+  clairvox:
+    build: .
+    image: clairvox:latest
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - CLAIM_EXTRACTION_METHOD=llm
