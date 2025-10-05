@@ -588,46 +588,6 @@ if st.session_state.results:
             hide_index=True
         )
         
-        # Enhanced conclusion points with proper links
-        st.markdown("### 📋 Key Conclusions & Evidence Links")
-        
-        for i, data in enumerate(summary_data):
-            classification = data['Classification']
-            confidence_score = int(data['Confidence Score'].split('/')[0])
-            
-            # Color coding for confidence
-            if confidence_score > 70:
-                confidence_emoji = "🟢"
-                confidence_text = "High Confidence"
-            elif confidence_score > 40:
-                confidence_emoji = "🟡"
-                confidence_text = "Medium Confidence"
-            else:
-                confidence_emoji = "🔴"
-                confidence_text = "Low Confidence"
-            
-            st.markdown(f"**Claim {i+1}:** {confidence_emoji} {classification} ({confidence_text})")
-            
-            if data['Top Sources']:
-                st.markdown("**Key Evidence Links:**")
-                for j, source in enumerate(data['Top Sources'][:3]):  # Show top 3 sources
-                    source_emoji = {'peer-reviewed': '📚', 'preprint': '📄', 'conference': '🎯', 'web': '🌐', 'research': '🔬'}.get(source['type'], '📄')
-                    clean_title = clean_html_from_text(source['title'])
-                    
-                    # Create clickable link for the title
-                    source_url = source.get('url', '')
-                    if source_url and (source_url.startswith(('http://', 'https://')) or source_url.startswith('www.')):
-                        if source_url.startswith('www.'):
-                            source_url = 'https://' + source_url
-                        title_link = f"[{clean_title}]({source_url})"
-                    else:
-                        title_link = clean_title
-                    
-                    st.markdown(f"• {source_emoji} {title_link}")
-            else:
-                st.markdown("⚠️ No supporting evidence found")
-            
-            st.markdown("")
 
 
 
